@@ -12,6 +12,12 @@ struct sq_per_tensor_params {
     int zero_point;
 };
 
+// dist functions
+float l1_dist_fp32(const float* a, const float* b, size_t n);
+float l2_dist_fp32(const float* a, const float* b, size_t n);
+float dot_product_fp32(const float* a, const float* b, size_t n);
+float cosine_sim_fp32(const float* a, const float* b, size_t n);
+
 // RoPE, support in-place.
 void apply_rope_emb(
     float* k,     // [B, L, D]
