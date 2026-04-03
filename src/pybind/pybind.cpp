@@ -83,6 +83,29 @@ torch::Tensor transpose_torch(
     return result;
 }
 
+std::tuple<torch::Tensor, torch::Tensor> compute_rerotation_cos_sin_torch(
+    torch::Tensor freqs_cos, // [L, half]
+    torch::Tensor freqs_sin, // [L, half]
+    int64_t ori_pos,
+    int64_t new_pos,
+    int64_t matched_len
+) {
+    auto L = freqs_cos.size(0); // seq_len
+    auto half = freqs_cos.size(1); // half
+    auto rerotation_cos = torch::empty_like(freqs_cos);
+    auto rerotation_sin = torch::empty_like(freqs_sin);
+
+    compute_rerotation_cos_sin(
+        freqs_cos.data_ptr<float>(),
+        freqs_sin.data_ptr<float>(),
+        rerotation_cos.data_ptr<float>(),
+        rerotation_sin.data_ptr<float>(),
+        L, half, ori_pos, new_pos, matched_len
+    );
+
+    return std::make_tuple(rerotation_cos, rerotation_sin);
+}
+
 torch::Tensor rerotate_k_fp32_torch(
     torch::Tensor k,
     torch::Tensor cos,
@@ -122,6 +145,10 @@ PYBIND11_MODULE(pylmstore, m) {
           "Rerotate k using C++ implementation",
           py::arg("k"), py::arg("cos"), py::arg("sin"), 
           py::arg("enable_r3")=false);
+    m.def("compute_rerotation_cos_sin_cpp", &compute_rerotation_cos_sin_torch,
+          "Compute rerotation cos and sin using C++ implementation",
+          py::arg("freqs_cos"), py::arg("freqs_sin"),
+          py::arg("ori_pos"), py::arg("new_pos"), py::arg("matched_len"));
 }
 
 #endif // NEED_PYBIND

@@ -39,6 +39,14 @@ void fwht_tensor(float* input, float* output,
 void transpose_tensor(float* input, float* output, 
                       int dim0, int dim1, int dim2);
 
+void compute_rerotation_cos_sin(
+    const float* freqs_cos, // [L, half]
+    const float* freqs_sin, // [L, half]
+    float* rerotation_cos,  // [matched_len, half]
+    float* rerotation_sin,  // [matched_len, half]
+    int64_t L, int64_t half,
+    int64_t ori_pos, int64_t new_pos, int64_t matched_len);
+
 // Per-Layer Rerotation, support in-place.                 
 void rerotate_k_fp32(float* k, float* output,
                      const float* cos, const float* sin,
