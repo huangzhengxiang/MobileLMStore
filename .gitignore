@@ -1,2 +1,4 @@
 *.zip/
 vendor/
+build/
+**/__pycache__/
