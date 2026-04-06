@@ -17,7 +17,7 @@ endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
     message(STATUS "Enabling NEON")
     add_definitions(-D__NEON__)
-    add_compile_options(-mfpu=neon)
+    # add_compile_options(-mfpu=neon)
 endif()
 
 message(STATUS "Check sqlite...")
