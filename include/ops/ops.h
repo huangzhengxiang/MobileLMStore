@@ -76,6 +76,24 @@ void scalar_dequantize_per_tensor_u8(
     size_t size,
     float scale,
     int zero_point);
+void scalar_dequantize_per_tensor_i8(
+    const int8_t* input,
+    float* output,
+    size_t size,
+    float scale,
+    int zero_point);
+void scalar_dequantize_per_tensor_u16(
+    const uint16_t* input,
+    float* output,
+    size_t size,
+    float scale,
+    int zero_point);
+void scalar_dequantize_per_tensor_i16(
+    const int16_t* input,
+    float* output,
+    size_t size,
+    float scale,
+    int zero_point);
 }
 
 #endif // OPS_HPP

@@ -152,4 +152,137 @@ void scalar_dequantize_per_tensor_u8(
     }
 }
 
+void scalar_dequantize_per_tensor_i8(
+    const int8_t* input,
+    float* output,
+    size_t size,
+    float scale,
+    int zero_point) {
+    size_t i = 0;
+#if defined(__AVX2__)
+    __m256 v_scale = _mm256_set1_ps(scale);
+    __m256i v_zp = _mm256_set1_epi32(zero_point);
+
+    for (; i + 8 <= size; i += 8) {
+        __m128i i8 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(input + i));
+        __m256i i32 = _mm256_cvtepi8_epi32(i8);
+        i32 = _mm256_sub_epi32(i32, v_zp);
+        __m256 f = _mm256_cvtepi32_ps(i32);
+        f = _mm256_mul_ps(f, v_scale);
+        _mm256_storeu_ps(output + i, f);
+    }
+#elif defined(__NEON__)
+    float32x4_t v_scale = vdupq_n_f32(scale);
+    int32x4_t v_zp = vdupq_n_s32(zero_point);
+
+    for (; i + 8 <= size; i += 8) {
+        int8x8_t i8 = vld1_s8(input + i);
+        int16x8_t i16 = vmovl_s8(i8);
+        int32x4_t i0 = vmovl_s16(vget_low_s16(i16));
+        int32x4_t i1 = vmovl_s16(vget_high_s16(i16));
+
+        i0 = vsubq_s32(i0, v_zp);
+        i1 = vsubq_s32(i1, v_zp);
+
+        float32x4_t f0 = vmulq_f32(vcvtq_f32_s32(i0), v_scale);
+        float32x4_t f1 = vmulq_f32(vcvtq_f32_s32(i1), v_scale);
+
+        vst1q_f32(output + i, f0);
+        vst1q_f32(output + i + 4, f1);
+    }
+#endif
+    for (; i < size; ++i) {
+        output[i] = scale * (static_cast<int>(input[i]) - zero_point);
+    }
+}
+
+void scalar_dequantize_per_tensor_u16(
+    const uint16_t* input,
+    float* output,
+    size_t size,
+    float scale,
+    int zero_point) {
+    size_t i = 0;
+#if defined(__AVX2__)
+    __m256 v_scale = _mm256_set1_ps(scale);
+    __m256i v_zp = _mm256_set1_epi32(zero_point);
+
+    for (; i + 8 <= size; i += 8) {
+        __m128i u16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(input + i));
+        __m256i i32 = _mm256_cvtepu16_epi32(u16);
+        i32 = _mm256_sub_epi32(i32, v_zp);
+        __m256 f = _mm256_cvtepi32_ps(i32);
+        f = _mm256_mul_ps(f, v_scale);
+        _mm256_storeu_ps(output + i, f);
+    }
+#elif defined(__NEON__)
+    float32x4_t v_scale = vdupq_n_f32(scale);
+    int32x4_t v_zp = vdupq_n_s32(zero_point);
+
+    for (; i + 8 <= size; i += 8) {
+        uint16x8_t u16 = vld1q_u16(input + i);
+        uint32x4_t lo = vmovl_u16(vget_low_u16(u16));
+        uint32x4_t hi = vmovl_u16(vget_high_u16(u16));
+
+        int32x4_t i0 = vreinterpretq_s32_u32(lo);
+        int32x4_t i1 = vreinterpretq_s32_u32(hi);
+
+        i0 = vsubq_s32(i0, v_zp);
+        i1 = vsubq_s32(i1, v_zp);
+
+        float32x4_t f0 = vmulq_f32(vcvtq_f32_s32(i0), v_scale);
+        float32x4_t f1 = vmulq_f32(vcvtq_f32_s32(i1), v_scale);
+
+        vst1q_f32(output + i, f0);
+        vst1q_f32(output + i + 4, f1);
+    }
+#endif
+    for (; i < size; ++i) {
+        output[i] = scale * (static_cast<int>(input[i]) - zero_point);
+    }
+}
+
+void scalar_dequantize_per_tensor_i16(
+    const int16_t* input,
+    float* output,
+    size_t size,
+    float scale,
+    int zero_point) {
+    size_t i = 0;
+#if defined(__AVX2__)
+    __m256 v_scale = _mm256_set1_ps(scale);
+    __m256i v_zp = _mm256_set1_epi32(zero_point);
+
+    for (; i + 8 <= size; i += 8) {
+        __m128i i16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(input + i));
+        __m256i i32 = _mm256_cvtepi16_epi32(i16);
+        i32 = _mm256_sub_epi32(i32, v_zp);
+        __m256 f = _mm256_cvtepi32_ps(i32);
+        f = _mm256_mul_ps(f, v_scale);
+        _mm256_storeu_ps(output + i, f);
+    }
+#elif defined(__NEON__)
+    float32x4_t v_scale = vdupq_n_f32(scale);
+    int32x4_t v_zp = vdupq_n_s32(zero_point);
+
+    for (; i + 8 <= size; i += 8) {
+        int16x8_t i16 = vld1q_s16(input + i);
+        int32x4_t i0 = vmovl_s16(vget_low_s16(i16));
+        int32x4_t i1 = vmovl_s16(vget_high_s16(i16));
+
+        i0 = vsubq_s32(i0, v_zp);
+        i1 = vsubq_s32(i1, v_zp);
+
+        float32x4_t f0 = vmulq_f32(vcvtq_f32_s32(i0), v_scale);
+        float32x4_t f1 = vmulq_f32(vcvtq_f32_s32(i1), v_scale);
+
+        vst1q_f32(output + i, f0);
+        vst1q_f32(output + i + 4, f1);
+    }
+#endif
+    for (; i < size; ++i) {
+        output[i] = scale * (static_cast<int>(input[i]) - zero_point);
+    }
+}
+
 } // namespace LMStore
