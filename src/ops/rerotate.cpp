@@ -74,8 +74,8 @@ void compute_rerotation_cos_sin(
             vst1q_f32(out_sin + j, sin_res);
         }
 #endif
-        // tail/fallback
-        for (int64_t j = 0; j < half; ++j) {
+        // tail/fallback for elements not covered by SIMD
+        for (; j < half; ++j) {
             out_cos[j] = new_cos[j] * orig_cos[j] + new_sin[j] * orig_sin[j];
             out_sin[j] = new_sin[j] * orig_cos[j] - new_cos[j] * orig_sin[j];
         }

@@ -7,6 +7,7 @@
 
 
 namespace LMStore {
+struct rope_config_params;
 struct sq_per_tensor_params {
     float scale;
     int zero_point;
@@ -32,6 +33,30 @@ std::vector<float> apply_rope_emb_wrapper(const std::vector<float>& k,
                                           const std::vector<float>& cos,
                                           const std::vector<float>& sin,
                                           int B, int L, int D);
+
+// Precompute RoPE freqs_cos/freqs_sin for C++ pipeline.
+// Output layout follows apply_rope_emb(): [L, D/2].
+void precompute_rope_freqs_cis(
+    float* freqs_cos,                 // [L, D/2]
+    float* freqs_sin,                 // [L, D/2]
+    int L,
+    int D,
+    float theta,                      // usually 10000.0
+    bool use_hf_rope,                 // static_llama: hf_precompute_freqs_cis vs precompute_freqs_cis
+    float partial_rotary_factor,      // only used when use_hf_rope=true
+    bool use_scaled_rope = false,     // only used when use_hf_rope=false
+    int scale_factor = 8,             // only used when use_scaled_rope=true
+    int high_freq_factor = 4          // same default as rope.py
+);
+
+// Overload for config-driven pipeline usage.
+// Auto maps parameters from rope_config_params to the base interface.
+void precompute_rope_freqs_cis(
+    float* freqs_cos,                 // [L, head_dim/2]
+    float* freqs_sin,                 // [L, head_dim/2]
+    int L,
+    const rope_config_params& rope_cfg
+);
 
 // hadamard transform (FWHT), support in-place if transpose=false.                     
 void fwht_tensor(float* input, float* output, 

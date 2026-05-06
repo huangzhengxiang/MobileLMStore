@@ -20,15 +20,21 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
     # add_compile_options(-mfpu=neon)
 endif()
 
-message(STATUS "Check sqlite...")
+message(STATUS "Check third-party dependencies...")
 execute_process(
     COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/vendor.sh
     WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
+    RESULT_VARIABLE VENDOR_FETCH_RESULT
 )
+if(NOT VENDOR_FETCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to prepare MobileLMStore third-party dependencies (sqlite/rapidjson).")
+endif()
 
 include_directories(
                     # sqlite include
                     ${CMAKE_CURRENT_LIST_DIR}/vendor/
+                    # rapidjson include
+                    ${CMAKE_CURRENT_LIST_DIR}/vendor/rapidjson/include/
                     ${CMAKE_CURRENT_LIST_DIR}/include/
                     )
 
