@@ -8,6 +8,7 @@ option(PYBIND "Need to pybind a module for testing" OFF)
 add_compile_options(-O3)
 
 include(CheckCXXCompilerFlag)
+include(CheckCXXSourceCompiles)
 check_cxx_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
 if(COMPILER_SUPPORTS_AVX2)
     message(STATUS "Enabling AVX2")
@@ -19,6 +20,19 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
     add_definitions(-D__NEON__)
     # add_compile_options(-mfpu=neon)
 endif()
+
+check_cxx_source_compiles("
+int main() {
+  _Float16 x = (_Float16)0;
+  (void)x;
+  return 0;
+}" LMSTORE_COMPILER_HAS_FP16)
+if(LMSTORE_COMPILER_HAS_FP16)
+    set(LMSTORE_FP16_STATUS "ENABLED")
+else()
+    set(LMSTORE_FP16_STATUS "DISABLED")
+endif()
+message(STATUS "MobileLMStore FP16 path: ${LMSTORE_FP16_STATUS}")
 
 message(STATUS "Check third-party dependencies...")
 execute_process(
@@ -45,6 +59,13 @@ add_library(LMStore SHARED
             ${LMStore_Srcs})
 target_compile_definitions(LMStore PRIVATE _GLIBCXX_USE_CXX11_ABI=1)
 add_definitions(-DSQLITE_CORE)
+
+add_executable(test_fwht_simd
+               ${CMAKE_CURRENT_LIST_DIR}/tests/test_fwht_simd.cpp)
+target_link_libraries(test_fwht_simd PRIVATE LMStore)
+target_include_directories(test_fwht_simd PRIVATE
+                           ${CMAKE_CURRENT_LIST_DIR}/include/)
+target_compile_definitions(test_fwht_simd PRIVATE _GLIBCXX_USE_CXX11_ABI=1)
 
 if (PYBIND) 
     execute_process(

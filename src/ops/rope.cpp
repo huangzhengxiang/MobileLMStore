@@ -189,6 +189,54 @@ void apply_rope_emb(
     }
 }
 
+#if defined(LMSTORE_HAS_FP16)
+void apply_rope_emb(
+    fp16_t* k,
+    fp16_t* result,
+    const fp16_t* cos,
+    const fp16_t* sin,
+    int B,
+    int L,
+    int D) {
+    const int half = D / 2;
+
+    for (int b = 0; b < B; ++b) {
+        for (int l = 0; l < L; ++l) {
+            const fp16_t* k_ptr = k + b * L * D + l * D;
+            fp16_t* out_ptr = result + b * L * D + l * D;
+
+            const fp16_t* cos_ptr = cos + l * half;
+            const fp16_t* sin_ptr = sin + l * half;
+
+            int d = 0;
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+            for (; d + 8 <= half; d += 8) {
+                float16x8_t xr = vld1q_f16(k_ptr + d);
+                float16x8_t xi = vld1q_f16(k_ptr + d + half);
+                float16x8_t c = vld1q_f16(cos_ptr + d);
+                float16x8_t s = vld1q_f16(sin_ptr + d);
+
+                float16x8_t out_r = vsubq_f16(vmulq_f16(xr, c), vmulq_f16(xi, s));
+                float16x8_t out_i = vaddq_f16(vmulq_f16(xr, s), vmulq_f16(xi, c));
+
+                vst1q_f16(out_ptr + d, out_r);
+                vst1q_f16(out_ptr + d + half, out_i);
+            }
+#endif
+            for (; d < half; ++d) {
+                fp16_t xr = k_ptr[d];
+                fp16_t xi = k_ptr[d + half];
+                fp16_t c = cos_ptr[d];
+                fp16_t s = sin_ptr[d];
+
+                out_ptr[d] = xr * c - xi * s;
+                out_ptr[d + half] = xr * s + xi * c;
+            }
+        }
+    }
+}
+#endif
+
 std::vector<float> apply_rope_emb_wrapper(std::vector<float>& k,
                                           const std::vector<float>& cos,
                                           const std::vector<float>& sin,

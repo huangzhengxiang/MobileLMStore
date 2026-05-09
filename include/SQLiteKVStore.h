@@ -1,6 +1,8 @@
 #pragma once
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <sqlite3.h>
@@ -42,6 +44,16 @@ struct BuildInputResult {
     std::vector<BuildInputMatch> segments;
     ChunkMergeResult merge_result;
     std::vector<ChunkRecipe> recipes;
+};
+
+struct CacheRowInfo {
+    int kv_id = -1;
+    int prompt_len = 0;
+    int64_t ori_pos = 0;
+    int prev_kv_id = -1;
+    int succ_kv_id = -1;
+    int root_kv_id = -1;
+    int chunk_start = 0;
 };
 
 template<typename T>
@@ -566,31 +578,74 @@ private:
         if (n == 0 || m == 0) {
             return best;
         }
-        std::vector<int> prev(m + 1, 0);
-        std::vector<int> cur(m + 1, 0);
-        int best_len = 0;
-        int best_end_i = -1;
-        int best_end_j = -1;
-        for (int i = 1; i <= n; ++i) {
-            for (int j = 1; j <= m; ++j) {
-                if (prompt_tokens[i - 1] == row.prompt_tokens[j - 1]) {
-                    cur[j] = prev[j - 1] + 1;
-                    if (cur[j] > best_len) {
-                        best_len = cur[j];
-                        best_end_i = i - 1;
-                        best_end_j = j - 1;
-                    }
-                } else {
-                    cur[j] = 0;
+
+        BuildInputMatch best_prefix = best;
+        int prefix_len = 0;
+        int prefix_start = -1;
+        for (int i = 0; i < n; ++i) {
+            if (prompt_tokens[i] == row.prompt_tokens[prefix_len]) {
+                if (prefix_len == 0) {
+                    prefix_start = i;
                 }
+                ++prefix_len;
+                if (prefix_len > best_prefix.matched_len) {
+                    best_prefix.cur_start_pos = prefix_start;
+                    best_prefix.ori_start_pos = row.chunk_start;
+                    best_prefix.matched_len = prefix_len;
+                }
+                if (prefix_len == m) {
+                    prefix_len = 0;
+                    prefix_start = -1;
+                }
+            } else if (prompt_tokens[i] == row.prompt_tokens[0]) {
+                prefix_len = 1;
+                prefix_start = i;
+                if (best_prefix.matched_len < 1) {
+                    best_prefix.cur_start_pos = prefix_start;
+                    best_prefix.ori_start_pos = row.chunk_start;
+                    best_prefix.matched_len = 1;
+                }
+            } else {
+                prefix_len = 0;
+                prefix_start = -1;
             }
-            std::swap(prev, cur);
-            std::fill(cur.begin(), cur.end(), 0);
         }
-        best.cur_start_pos = best_end_i - best_len + 1;
-        best.ori_start_pos = row.chunk_start + best_end_j - best_len + 1;
-        best.matched_len = best_len;
-        return best;
+
+        BuildInputMatch best_suffix = best;
+        int suffix_len = 0;
+        int suffix_end = -1;
+        for (int i = n - 1; i >= 0; --i) {
+            if (prompt_tokens[i] == row.prompt_tokens[m - 1 - suffix_len]) {
+                if (suffix_len == 0) {
+                    suffix_end = i;
+                }
+                ++suffix_len;
+                if (suffix_len > best_suffix.matched_len) {
+                    best_suffix.cur_start_pos = i;
+                    best_suffix.ori_start_pos = row.chunk_start + m - suffix_len;
+                    best_suffix.matched_len = suffix_len;
+                }
+                if (suffix_len == m) {
+                    suffix_len = 0;
+                    suffix_end = -1;
+                }
+            } else if (prompt_tokens[i] == row.prompt_tokens[m - 1]) {
+                suffix_len = 1;
+                suffix_end = i;
+                if (best_suffix.matched_len < 1) {
+                    best_suffix.cur_start_pos = i;
+                    best_suffix.ori_start_pos = row.chunk_start + m - 1;
+                    best_suffix.matched_len = 1;
+                }
+            } else {
+                suffix_len = 0;
+                suffix_end = -1;
+            }
+        }
+
+        return best_prefix.matched_len >= best_suffix.matched_len
+            ? best_prefix
+            : best_suffix;
     }
 
     static bool prefer_match(const BuildInputMatch& lhs, const BuildInputMatch& rhs) {
@@ -753,6 +808,123 @@ public:
             ? 0
             : sqlite3_column_int64(stmt, 0);
         sqlite3_finalize(stmt);
+        return true;
+    }
+
+    bool get_row_info(int row_id, CacheRowInfo* info) {
+        RowInfo row;
+        if (!read_row_by_id(row_id, &row)) {
+            return false;
+        }
+        info->kv_id = row.kv_id;
+        info->prompt_len = row.prompt_len;
+        info->ori_pos = row.ori_pos;
+        info->prev_kv_id = row.prev_kv_id;
+        info->succ_kv_id = row.succ_kv_id;
+        info->root_kv_id = row.root_kv_id;
+        info->chunk_start = row.chunk_start;
+        return true;
+    }
+
+    bool read_row_cache(
+        int row_id,
+        const std::vector<T*>& k_store,
+        const std::vector<T*>& v_store) {
+        RowInfo row;
+        if (!read_row_by_id(row_id, &row)) {
+            return false;
+        }
+        if (!open_blob_for_row(row.kv_id, row.prompt_len)) {
+            return false;
+        }
+        for (int layer = 0; layer < meta_.num_layers; ++layer) {
+            if (!read_layer_k(layer, k_store[layer]) ||
+                !read_layer_v(layer, v_store[layer])) {
+                close_blob();
+                return false;
+            }
+        }
+        close_blob();
+        return true;
+    }
+
+    bool prepare_prompt_cache_rows(
+        const std::vector<uint64_t>& prompt_tokens,
+        uint64_t next_token,
+        int64_t ori_pos,
+        std::vector<CacheRowInfo>* rows,
+        int chunk_limit = kKVStoreChunkLimit) {
+        write_header();
+        rows->clear();
+        const int full_len = static_cast<int>(prompt_tokens.size());
+        int root_row_id = -1;
+        int prev_row_id = -1;
+        for (int chunk_start = 0; chunk_start < full_len; chunk_start += chunk_limit) {
+            const int chunk_len = std::min(chunk_limit, full_len - chunk_start);
+            std::vector<uint64_t> chunk_tokens(
+                prompt_tokens.begin() + chunk_start,
+                prompt_tokens.begin() + chunk_start + chunk_len);
+            int row_id = insert_prompt_row(
+                chunk_tokens,
+                chunk_start == 0 ? next_token : 0,
+                ori_pos,
+                prev_row_id,
+                root_row_id >= 0 ? root_row_id : -1,
+                chunk_start);
+            if (row_id < 0) {
+                return false;
+            }
+            if (root_row_id < 0) {
+                root_row_id = row_id;
+                if (!update_root_kv_id(root_row_id, root_row_id)) {
+                    return false;
+                }
+            } else if (!update_root_kv_id(row_id, root_row_id) ||
+                       !update_succ_kv_id(prev_row_id, row_id)) {
+                return false;
+            }
+
+            kv_id_ = row_id;
+            seq_len_ = chunk_len;
+            if (!create_blob_for_active_row()) {
+                return false;
+            }
+            close_blob();
+
+            CacheRowInfo info;
+            info.kv_id = row_id;
+            info.prompt_len = chunk_len;
+            info.ori_pos = ori_pos;
+            info.prev_kv_id = prev_row_id;
+            info.succ_kv_id = -1;
+            info.root_kv_id = root_row_id;
+            info.chunk_start = chunk_start;
+            rows->push_back(info);
+            prev_row_id = row_id;
+        }
+        kv_id_ = root_row_id;
+        active_root_kv_id_ = root_row_id;
+        return true;
+    }
+
+    bool write_row_cache(
+        int row_id,
+        int seq_len,
+        const std::vector<T*>& k_store,
+        const std::vector<T*>& v_store) {
+        kv_id_ = row_id;
+        seq_len_ = seq_len;
+        if (!open_blob_for_row(row_id, seq_len)) {
+            return false;
+        }
+        for (int layer = 0; layer < meta_.num_layers; ++layer) {
+            if (!write_layer_k(layer, k_store[layer]) ||
+                !write_layer_v(layer, v_store[layer])) {
+                close_blob();
+                return false;
+            }
+        }
+        close_blob();
         return true;
     }
 
@@ -1042,9 +1214,13 @@ public:
         int shared_reuse_budget = kKVStoreChunkLimit,
         int prompt_budget = kKVStoreChunkLimit,
         double d = 0.2,
-        double reuse_ratio = 0.25) {
+        double reuse_ratio = 0.25,
+        bool enable_nonprefix_lcs = true) {
+        using Clock = std::chrono::steady_clock;
+        const auto t0 = Clock::now();
         BuildInputResult result;
         std::vector<RowInfo> rows = read_all_rows();
+        const auto t1 = Clock::now();
         for (size_t i = 0; i < rows.size(); ++i) {
             const RowInfo& row = rows[i];
             if (cur_pos == 0 && row.ori_pos == 0 && row.chunk_start == 0) {
@@ -1073,12 +1249,14 @@ public:
                     result.raw_matches.push_back(match);
                 }
             }
-
-            BuildInputMatch lcs = longest_common_substring_match(prompt_tokens, row);
-            if (lcs.matched_len >= minimum_hit_thres) {
-                result.raw_matches.push_back(lcs);
+            if (enable_nonprefix_lcs) {
+                BuildInputMatch lcs = longest_common_substring_match(prompt_tokens, row);
+                if (lcs.matched_len >= minimum_hit_thres) {
+                    result.raw_matches.push_back(lcs);
+                }
             }
         }
+        const auto t2 = Clock::now();
 
         int n = static_cast<int>(prompt_tokens.size());
         std::vector<int> chosen(n, -1);
@@ -1123,6 +1301,7 @@ public:
             }
             result.segments.push_back(seg);
         }
+        const auto t3 = Clock::now();
 
         int prefix_len = 0;
         if (!result.segments.empty() &&
@@ -1153,6 +1332,7 @@ public:
                 d,
                 reuse_ratio);
         }
+        const auto t4 = Clock::now();
 
         if (prefix_len > 0) {
             ChunkRecipe prefix_recipe;
@@ -1209,6 +1389,31 @@ public:
                 result.recipes[i].origins[j].cur_start_pos += static_cast<int32_t>(cur_pos);
             }
         }
+        const auto t5 = Clock::now();
+        const auto read_rows_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        const auto match_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+        const auto segment_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
+        const auto merge_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(t4 - t3).count();
+        const auto recipe_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count();
+        const auto total_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t0).count();
+        printf(
+            "[BuildInputTiming] read_rows_ms=%lld match_ms=%lld segment_ms=%lld merge_ms=%lld recipe_ms=%lld total_ms=%lld rows=%zu raw_matches=%zu segments=%zu recipes=%zu\n",
+            static_cast<long long>(read_rows_ms),
+            static_cast<long long>(match_ms),
+            static_cast<long long>(segment_ms),
+            static_cast<long long>(merge_ms),
+            static_cast<long long>(recipe_ms),
+            static_cast<long long>(total_ms),
+            rows.size(),
+            result.raw_matches.size(),
+            result.segments.size(),
+            result.recipes.size());
         return result;
     }
 

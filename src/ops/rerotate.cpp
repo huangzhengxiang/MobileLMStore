@@ -7,7 +7,7 @@
 #elif defined(__NEON__)
 #include <arm_neon.h>
 #endif
-#include <iostream>
+#include <vector>
 
 
 namespace LMStore {
@@ -82,6 +82,50 @@ void compute_rerotation_cos_sin(
     }
 }
 
+#if defined(LMSTORE_HAS_FP16)
+void compute_rerotation_cos_sin(
+    const fp16_t* freqs_cos,
+    const fp16_t* freqs_sin,
+    fp16_t* rerotation_cos,
+    fp16_t* rerotation_sin,
+    int64_t L,
+    int64_t half,
+    int64_t ori_pos,
+    int64_t new_pos,
+    int64_t matched_len
+) {
+    for (int i = 0; i < matched_len; ++i) {
+        const fp16_t* orig_cos = freqs_cos + (ori_pos + i) * half;
+        const fp16_t* orig_sin = freqs_sin + (ori_pos + i) * half;
+        const fp16_t* new_cos = freqs_cos + (new_pos + i) * half;
+        const fp16_t* new_sin = freqs_sin + (new_pos + i) * half;
+
+        fp16_t* out_cos = rerotation_cos + i * half;
+        fp16_t* out_sin = rerotation_sin + i * half;
+
+        int j = 0;
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+        for (; j + 8 <= half; j += 8) {
+            float16x8_t orig_c = vld1q_f16(orig_cos + j);
+            float16x8_t orig_s = vld1q_f16(orig_sin + j);
+            float16x8_t new_c = vld1q_f16(new_cos + j);
+            float16x8_t new_s = vld1q_f16(new_sin + j);
+
+            float16x8_t cos_res = vaddq_f16(vmulq_f16(new_c, orig_c), vmulq_f16(new_s, orig_s));
+            float16x8_t sin_res = vsubq_f16(vmulq_f16(new_s, orig_c), vmulq_f16(new_c, orig_s));
+
+            vst1q_f16(out_cos + j, cos_res);
+            vst1q_f16(out_sin + j, sin_res);
+        }
+#endif
+        for (; j < half; ++j) {
+            out_cos[j] = new_cos[j] * orig_cos[j] + new_sin[j] * orig_sin[j];
+            out_sin[j] = new_sin[j] * orig_cos[j] - new_cos[j] * orig_sin[j];
+        }
+    }
+}
+#endif
+
 void rerotate_k_fp32(float* k, float* output, 
                      const float* cos, const float* sin,
                      int B, int L, int D, 
@@ -117,5 +161,36 @@ void rerotate_k_u8(uint8_t* k, uint8_t* output,
     scalar_quantize_per_tensor_u8(k_buffer, output, size, params.scale, params.zero_point);
     delete[] k_buffer;
 }
+
+#if defined(LMSTORE_HAS_FP16)
+void rerotate_k_u8_fp16(uint8_t* k, uint8_t* output,
+                        const fp16_t* cos, const fp16_t* sin,
+                        int B, int L, int D, struct sq_per_tensor_params params,
+                        bool enable_r3) {
+    size_t size = B * L * D;
+    fp16_t* k_buffer = new fp16_t[size];
+    scalar_dequantize_per_tensor_u8(k, k_buffer, size, params.scale, params.zero_point);
+    if (enable_r3) {
+        const fp16_t scale = static_cast<fp16_t>(1.0f / std::sqrt(static_cast<float>(D)));
+        fwht_tensor(k_buffer, k_buffer, B, L, D, scale, true);
+        apply_rope_emb(k_buffer, k_buffer, cos, sin, B, L, D);
+        fwht_tensor(k_buffer, k_buffer, B, L, D, scale, false);
+    } else {
+        std::vector<fp16_t> transposed_fp16(size);
+        transpose_tensor(k_buffer, transposed_fp16.data(), B, D, L);
+        apply_rope_emb(transposed_fp16.data(), transposed_fp16.data(), cos, sin, B, L, D);
+        transpose_tensor(transposed_fp16.data(), k_buffer, B, L, D);
+    }
+    std::vector<fp16_t> transposed_fp16(size);
+    transpose_tensor(k_buffer, transposed_fp16.data(), B, L, D);
+    std::vector<float> fp32_buffer(size);
+    for (size_t i = 0; i < size; ++i) {
+        fp32_buffer[i] = static_cast<float>(transposed_fp16[i]);
+    }
+    scalar_quantize_per_tensor_u8(
+        fp32_buffer.data(), output, size, params.scale, params.zero_point);
+    delete[] k_buffer;
+}
+#endif
 
 }
