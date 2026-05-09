@@ -4,6 +4,8 @@
 #include <pybind11/stl.h>
 #include <pybind11/numpy.h>
 #include "ops/ops.h"
+#include "SQLiteVDB.h"
+#include <stdexcept>
 #include <vector>
 #include <string>
 #include <torch/extension.h>
@@ -132,6 +134,122 @@ torch::Tensor rerotate_k_fp32_torch(
 
 PYBIND11_MODULE(pylmstore, m) {
     m.doc() = "MobileLMStore Python binding";
+
+    py::enum_<VDBDistanceMetric>(m, "VDBDistanceMetric")
+        .value("L2", VDBDistanceMetric::L2)
+        .value("IP", VDBDistanceMetric::IP)
+        .value("COS", VDBDistanceMetric::COS);
+
+    py::enum_<VDBIndexType>(m, "VDBIndexType")
+        .value("FLAT", VDBIndexType::FLAT)
+        .value("IVF", VDBIndexType::IVF)
+        .value("IVF_PQ", VDBIndexType::IVF_PQ)
+        .value("HNSW", VDBIndexType::HNSW);
+
+    py::enum_<VDBScalarDType>(m, "VDBScalarDType")
+        .value("FP32", VDBScalarDType::FP32)
+        .value("FP16", VDBScalarDType::FP16)
+        .value("BF16", VDBScalarDType::BF16)
+        .value("INT8", VDBScalarDType::INT8)
+        .value("UINT8", VDBScalarDType::UINT8)
+        .value("INT4", VDBScalarDType::INT4)
+        .value("UINT4", VDBScalarDType::UINT4);
+
+    py::class_<VectorDBMeta>(m, "VectorDBMeta")
+        .def(py::init<>())
+        .def(py::init<VDBDistanceMetric, VDBIndexType, VDBScalarDType, int>(),
+             py::arg("distance_metric"),
+             py::arg("index_type"),
+             py::arg("scalar_dtype"),
+             py::arg("embed_dim"))
+        .def_readwrite("distance_metric", &VectorDBMeta::distance_metric)
+        .def_readwrite("index_type", &VectorDBMeta::index_type)
+        .def_readwrite("scalar_dtype", &VectorDBMeta::scalar_dtype)
+        .def_readwrite("embed_dim", &VectorDBMeta::embed_dim);
+
+    py::class_<VDBSearchResult>(m, "VDBSearchResult")
+        .def(py::init<>())
+        .def_readwrite("vec_id", &VDBSearchResult::vec_id)
+        .def_readwrite("distance", &VDBSearchResult::distance)
+        .def_readwrite("prompt", &VDBSearchResult::prompt)
+        .def_readwrite("kv_cache_file", &VDBSearchResult::kv_cache_file)
+        .def_readwrite("kv_id", &VDBSearchResult::kv_id);
+
+    py::class_<SQLiteVDB>(m, "SQLiteVDB")
+        .def(py::init<const std::string&>(), py::arg("filename"))
+        .def("open_write", &SQLiteVDB::open_write)
+        .def("open_read", &SQLiteVDB::open_read)
+        .def("close_fd", &SQLiteVDB::close_fd)
+        .def("init_tables", &SQLiteVDB::init_tables)
+        .def("reset", &SQLiteVDB::reset)
+        .def("write_meta", &SQLiteVDB::write_meta, py::arg("meta"))
+        .def("read_meta", &SQLiteVDB::read_meta)
+        .def("get_meta", &SQLiteVDB::get_meta, py::return_value_policy::copy)
+        .def("insert_prompt", [](SQLiteVDB& db, const std::string& prompt) {
+            int vec_id = -1;
+            if (!db.insert_prompt(prompt, &vec_id)) {
+                throw std::runtime_error("insert_prompt failed");
+            }
+            return vec_id;
+        }, py::arg("prompt"))
+        .def("insert_vector", [](SQLiteVDB& db, int vec_id, py::array vector, float scale, int zero_point) {
+            auto info = vector.request();
+            if (info.ndim != 1) {
+                throw std::runtime_error("insert_vector expects a 1D array");
+            }
+            if (!db.insert_vector(vec_id, info.ptr, static_cast<int>(info.size * info.itemsize), scale, zero_point)) {
+                throw std::runtime_error("insert_vector failed");
+            }
+        }, py::arg("vec_id"), py::arg("vector"), py::arg("scale") = 0.0f, py::arg("zero_point") = 0)
+        .def("insert_kv", [](SQLiteVDB& db, int vec_id, int kv_id, const std::string& kv_cache_file) {
+            if (!db.insert_kv(vec_id, kv_id, kv_cache_file)) {
+                throw std::runtime_error("insert_kv failed");
+            }
+        }, py::arg("vec_id"), py::arg("kv_id"), py::arg("kv_cache_file"))
+        .def("read_prompt", [](const SQLiteVDB& db, int vec_id) {
+            std::string prompt;
+            if (!db.read_prompt(vec_id, &prompt)) {
+                throw std::runtime_error("read_prompt failed");
+            }
+            return prompt;
+        }, py::arg("vec_id"))
+        .def("read_kv", [](const SQLiteVDB& db, int vec_id) {
+            int kv_id = -1;
+            std::string kv_cache_file;
+            if (!db.read_kv(vec_id, &kv_id, &kv_cache_file)) {
+                throw std::runtime_error("read_kv failed");
+            }
+            return py::make_tuple(kv_id, kv_cache_file);
+        }, py::arg("vec_id"))
+        .def("update_prompt", &SQLiteVDB::update_prompt, py::arg("vec_id"), py::arg("prompt"))
+        .def("update_kv", &SQLiteVDB::update_kv, py::arg("vec_id"), py::arg("kv_id"), py::arg("kv_cache_file"))
+        .def("delete_entry", &SQLiteVDB::delete_entry, py::arg("vec_id"))
+        .def("list_vec_ids", [](const SQLiteVDB& db) {
+            std::vector<int> vec_ids;
+            if (!db.list_vec_ids(&vec_ids)) {
+                throw std::runtime_error("list_vec_ids failed");
+            }
+            return vec_ids;
+        })
+        .def("count", [](const SQLiteVDB& db) {
+            int num_vectors = 0;
+            if (!db.count(&num_vectors)) {
+                throw std::runtime_error("count failed");
+            }
+            return num_vectors;
+        })
+        .def("search", [](const SQLiteVDB& db, py::array_t<float, py::array::c_style | py::array::forcecast> query_vector, int top_k, bool include_payload) {
+            auto info = query_vector.request();
+            if (info.ndim != 1) {
+                throw std::runtime_error("search expects a 1D float32 query vector");
+            }
+            std::vector<VDBSearchResult> results;
+            if (!db.search(static_cast<const float*>(info.ptr), top_k, &results, include_payload)) {
+                throw std::runtime_error("search failed");
+            }
+            return results;
+        }, py::arg("query_vector"), py::arg("top_k"), py::arg("include_payload") = true);
+
     m.def("apply_rope_emb_cpp", &apply_rope_emb_torch,
           "Apply RoPE embedding using C++ implementation",
           py::arg("k"), py::arg("cos"), py::arg("sin"));

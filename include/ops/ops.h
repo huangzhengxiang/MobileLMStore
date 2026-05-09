@@ -17,6 +17,14 @@ float l1_dist_fp32(const float* a, const float* b, size_t n);
 float l2_dist_fp32(const float* a, const float* b, size_t n);
 float dot_product_fp32(const float* a, const float* b, size_t n);
 float cosine_sim_fp32(const float* a, const float* b, size_t n);
+float l1_dist_u8(const uint8_t* a, const uint8_t* b, size_t n, float scale_a, int zero_point_a, float scale_b, int zero_point_b);
+float l2_dist_u8(const uint8_t* a, const uint8_t* b, size_t n, float scale_a, int zero_point_a, float scale_b, int zero_point_b);
+float dot_product_u8(const uint8_t* a, const uint8_t* b, size_t n, float scale_a, int zero_point_a, float scale_b, int zero_point_b);
+float cosine_sim_u8(const uint8_t* a, const uint8_t* b, size_t n, float scale_a, int zero_point_a, float scale_b, int zero_point_b);
+float l1_dist_s8(const int8_t* a, const int8_t* b, size_t n, float scale_a, int zero_point_a, float scale_b, int zero_point_b);
+float l2_dist_s8(const int8_t* a, const int8_t* b, size_t n, float scale_a, int zero_point_a, float scale_b, int zero_point_b);
+float dot_product_s8(const int8_t* a, const int8_t* b, size_t n, float scale_a, int zero_point_a, float scale_b, int zero_point_b);
+float cosine_sim_s8(const int8_t* a, const int8_t* b, size_t n, float scale_a, int zero_point_a, float scale_b, int zero_point_b);
 
 // RoPE, support in-place.
 void apply_rope_emb(
