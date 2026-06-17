@@ -5,7 +5,7 @@
 #include "ops/ops.h"
 #ifdef __AVX2__
 #include <immintrin.h>
-#elif defined(__NEON__)
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__NEON__)
 #include <arm_neon.h>
 #endif
 #include <cmath>
@@ -104,6 +104,86 @@ void scalar_quantize_per_tensor_u8(
     }
 }
 
+void scalar_quantize_per_tensor_i8(
+    const float* input,
+    int8_t* output,
+    size_t size,
+    float scale,
+    int zero_point)
+{
+    const float inv_scale = 1.0f / scale;
+    size_t i = 0;
+
+#if defined(__AVX2__)
+    __m256 v_inv_scale = _mm256_set1_ps(inv_scale);
+    __m256 v_zp = _mm256_set1_ps(static_cast<float>(zero_point));
+    __m256 v_min = _mm256_set1_ps(-128.0f);
+    __m256 v_max = _mm256_set1_ps(127.0f);
+
+    for (; i + 16 <= size; i += 16) {
+        __m256 x0 = _mm256_loadu_ps(input + i);
+        __m256 x1 = _mm256_loadu_ps(input + i + 8);
+
+        __m256 q0 = _mm256_mul_ps(x0, v_inv_scale);
+        __m256 q1 = _mm256_mul_ps(x1, v_inv_scale);
+        q0 = _mm256_round_ps(q0, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+        q1 = _mm256_round_ps(q1, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+        q0 = _mm256_add_ps(q0, v_zp);
+        q1 = _mm256_add_ps(q1, v_zp);
+        q0 = _mm256_max_ps(v_min, _mm256_min_ps(v_max, q0));
+        q1 = _mm256_max_ps(v_min, _mm256_min_ps(v_max, q1));
+
+        __m256i qi320 = _mm256_cvtps_epi32(q0);
+        __m256i qi321 = _mm256_cvtps_epi32(q1);
+        __m128i lo0 = _mm256_extracti128_si256(qi320, 0);
+        __m128i hi0 = _mm256_extracti128_si256(qi320, 1);
+        __m128i lo1 = _mm256_extracti128_si256(qi321, 0);
+        __m128i hi1 = _mm256_extracti128_si256(qi321, 1);
+        __m128i i16_0 = _mm_packs_epi32(lo0, hi0);
+        __m128i i16_1 = _mm_packs_epi32(lo1, hi1);
+        __m128i i8 = _mm_packs_epi16(i16_0, i16_1);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(output + i), i8);
+    }
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__NEON__)
+    float32x4_t v_inv_scale = vdupq_n_f32(inv_scale);
+    float32x4_t v_zp = vdupq_n_f32(static_cast<float>(zero_point));
+    float32x4_t v_min = vdupq_n_f32(-128.0f);
+    float32x4_t v_max = vdupq_n_f32(127.0f);
+
+    for (; i + 16 <= size; i += 16) {
+        float32x4_t x0 = vld1q_f32(input + i);
+        float32x4_t x1 = vld1q_f32(input + i + 4);
+        float32x4_t x2 = vld1q_f32(input + i + 8);
+        float32x4_t x3 = vld1q_f32(input + i + 12);
+
+        float32x4_t q0 = vaddq_f32(vrndnq_f32(vmulq_f32(x0, v_inv_scale)), v_zp);
+        float32x4_t q1 = vaddq_f32(vrndnq_f32(vmulq_f32(x1, v_inv_scale)), v_zp);
+        float32x4_t q2 = vaddq_f32(vrndnq_f32(vmulq_f32(x2, v_inv_scale)), v_zp);
+        float32x4_t q3 = vaddq_f32(vrndnq_f32(vmulq_f32(x3, v_inv_scale)), v_zp);
+
+        q0 = vmaxq_f32(v_min, vminq_f32(v_max, q0));
+        q1 = vmaxq_f32(v_min, vminq_f32(v_max, q1));
+        q2 = vmaxq_f32(v_min, vminq_f32(v_max, q2));
+        q3 = vmaxq_f32(v_min, vminq_f32(v_max, q3));
+
+        int32x4_t i0 = vcvtq_s32_f32(q0);
+        int32x4_t i1 = vcvtq_s32_f32(q1);
+        int32x4_t i2 = vcvtq_s32_f32(q2);
+        int32x4_t i3 = vcvtq_s32_f32(q3);
+
+        int16x8_t i16_0 = vcombine_s16(vqmovn_s32(i0), vqmovn_s32(i1));
+        int16x8_t i16_1 = vcombine_s16(vqmovn_s32(i2), vqmovn_s32(i3));
+        int8x16_t i8 = vcombine_s8(vqmovn_s16(i16_0), vqmovn_s16(i16_1));
+        vst1q_s8(output + i, i8);
+    }
+#endif
+    for (; i < size; ++i) {
+        float q = std::round(input[i] * inv_scale) + zero_point;
+        q = std::max(-128.0f, std::min(127.0f, q));
+        output[i] = static_cast<int8_t>(q);
+    }
+}
+
 void scalar_dequantize_per_tensor_u8(
     const uint8_t* input,
     float* output,
@@ -125,7 +205,7 @@ void scalar_dequantize_per_tensor_u8(
         _mm256_storeu_ps(output + i, _mm256_mul_ps(_mm256_cvtepi32_ps(i320), v_scale));
         _mm256_storeu_ps(output + i + 8, _mm256_mul_ps(_mm256_cvtepi32_ps(i321), v_scale));
     }
-#elif defined(__NEON__)
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__NEON__)
     float32x4_t v_scale = vdupq_n_f32(scale);
     int32x4_t v_zp = vdupq_n_s32(zero_point);
 

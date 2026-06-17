@@ -150,6 +150,12 @@ void scalar_quantize_per_tensor_u8(
     size_t size,
     float scale,
     int zero_point);
+void scalar_quantize_per_tensor_i8(
+    const float* input,
+    int8_t* output,
+    size_t size,
+    float scale,
+    int zero_point);
 void scalar_dequantize_per_tensor_u8(
     const uint8_t* input,
     float* output,

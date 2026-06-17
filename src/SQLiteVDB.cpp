@@ -93,7 +93,7 @@ float dist_from_fp32_query(
     }
     case VDBScalarDType::INT8: {
         std::vector<std::int8_t> quantized_query(static_cast<std::size_t>(dim), 0);
-        scalar_quantize_per_tensor_s8(
+        scalar_quantize_per_tensor_i8(
             query,
             quantized_query.data(),
             static_cast<std::size_t>(dim),
