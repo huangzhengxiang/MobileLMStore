@@ -13,11 +13,11 @@ struct sq_per_tensor_params {
     int zero_point;
 };
 
-#if defined(__FLT16_MANT_DIG__)
-using fp16_t = _Float16;
-#define LMSTORE_HAS_FP16 1
-#elif defined(__ARM_FP16_FORMAT_IEEE)
+#if defined(__ARM_FP16_FORMAT_IEEE)
 using fp16_t = __fp16;
+#define LMSTORE_HAS_FP16 1
+#elif defined(__FLT16_MANT_DIG__)
+using fp16_t = _Float16;
 #define LMSTORE_HAS_FP16 1
 #endif
 
